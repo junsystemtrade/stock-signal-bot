@@ -13,25 +13,18 @@ def get_stock_data(symbol):
     filename = f"{symbol}_history.csv"
     try:
         if os.path.exists(filename):
-            # 既存のデータを読み込み（日付をインデックスに設定）
             df_old = pd.read_csv(filename, index_col=0, parse_dates=True)
-            # データの最終日から最新分だけを取得
             last_date = df_old.index.max()
             new_data = yf.download(symbol, start=last_date + datetime.timedelta(days=1))
             
             if not new_data.empty:
-                # 新しいデータを結合して保存
                 df = pd.concat([df_old, new_data])
-                # 重複があれば最新を優先して削除
                 df = df[~df.index.duplicated(keep='last')]
                 df.to_csv(filename)
-                print(f"Updated {symbol}: Added {len(new_data)} rows.")
                 return df
             else:
-                print(f"No new data for {symbol}.")
                 return df_old
         else:
-            # 初回実行時は1年分取得
             df = yf.download(symbol, period='1y')
             if not df.empty:
                 df.to_csv(filename)
@@ -41,14 +34,10 @@ def get_stock_data(symbol):
         return pd.DataFrame()
 
 def calculate_signals(df):
-    # yfinanceのデータ構造が多重（MultiIndex）になる場合があるため、平坦化
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-
-    # ストキャスティクス自前計算 (K=14, D=3)
     low_14 = df['Low'].rolling(window=14).min()
     high_14 = df['High'].rolling(window=14).max()
-    
     df['STOCHk'] = 100 * ((df['Close'] - low_14) / (high_14 - low_14))
     df['STOCHd'] = df['STOCHk'].rolling(window=3).mean()
     df['buy_signal'] = (df['STOCHk'] <= 25) | (df['STOCHd'] <= 25)
@@ -101,18 +90,27 @@ def main():
             profit = current_value - cost_basis
             profit_str = f"${profit:+.2f}"
         
-        status_text = f"**【{symbol}】**\n保有数: {num_shares}株\n評価額: ${current_value:.2f} (損益: {profit_str})"
+        # --- 修正箇所1: ステータス作成部分 ---
+        status_text = (
+            f"【{symbol}】\n"
+            f"保有数: {num_shares}株\n"
+            f"評価額: ${current_value:.2f}（損益: {profit_str}）"
+        )
         symbol_status.append(status_text)
 
     trade_log.to_csv(CSV_FILE, index=False)
 
-    # 通知メッセージ作成
-    msg = f"📅 **{today_jt.strftime('%Y-%m-%d')} トレード報告**\n"
+    # --- 修正箇所2: 通知メッセージ作成部分 ---
+    msg = f"📅 **{today_jt.strftime('%Y-%m-%d')} トレード報告**\n\n"
+    
+    msg += "📢 **シグナル判定**\n"
     msg += "\n".join(notifications) if notifications else "✅ シグナルなし"
-    msg += "\n\n📊 **保有銘柄状況**\n"
+    msg += "\n\n"
+    
+    msg += "📊 **保有銘柄状況**\n"
     msg += "\n\n".join(symbol_status)
     
-    # 土曜日限定：週報（今週の購入履歴）
+    # 土曜日限定：週報
     if is_saturday:
         msg += "\n\n📜 **【週報】今週の購入履歴**\n"
         one_week_ago = (today_jt - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
