@@ -2,7 +2,6 @@ import os
 import datetime
 import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
 from discord import SyncWebhook
 
 # --- 設定 ---
@@ -12,17 +11,18 @@ CACHE_FILE = 'stock_cache.csv'
 DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
 
 def get_stock_data(symbol):
-    # キャッシュ読み込み（増分取得）
     if os.path.exists(CACHE_FILE):
-        df_cache = pd.read_csv(CACHE_FILE, index_col=0, parse_dates=True)
-        # 過去データがある場合はそれ以降を取得
-        last_date = df_cache.index.max()
-        new_data = yf.download(symbol, start=last_date + datetime.timedelta(days=1))
-        if not new_data.empty:
-            df = pd.concat([df_cache, new_data])
-            df = df[~df.index.duplicated(keep='last')]
-        else:
-            df = df_cache
+        try:
+            df_cache = pd.read_csv(CACHE_FILE, index_col=0, parse_dates=True)
+            last_date = df_cache.index.max()
+            new_data = yf.download(symbol, start=last_date + datetime.timedelta(days=1))
+            if not new_data.empty:
+                df = pd.concat([df_cache, new_data])
+                df = df[~df.index.duplicated(keep='last')]
+            else:
+                df = df_cache
+        except:
+            df = yf.download(symbol, period='1y')
     else:
         df = yf.download(symbol, period='1y')
     
@@ -30,18 +30,27 @@ def get_stock_data(symbol):
     return df
 
 def calculate_signals(df):
-    # ストキャスティクス (K=14, D=3)
-    stoch = ta.stoch(df['High'], df['Low'], df['Close'], k=14, d=3)
-    df = pd.concat([df, stoch], axis=1)
+    # ストキャスティクス自前計算 (K=14, D=3)
+    low_14 = df['Low'].rolling(window=14).min()
+    high_14 = df['High'].rolling(window=14).max()
+    
+    # %K
+    df['STOCHk'] = 100 * ((df['Close'] - low_14) / (high_14 - low_14))
+    # %D (3日移動平均)
+    df['STOCHd'] = df['STOCHk'].rolling(window=3).mean()
+    
     # 25%以下の判定
-    df['buy_signal'] = (df['STOCHk_14_3_3'] <= 25) | (df['STOCHd_14_3_3'] <= 25)
+    df['buy_signal'] = (df['STOCHk'] <= 25) | (df['STOCHd'] <= 25)
     return df
 
 def main():
     today_jt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
     is_saturday = today_jt.weekday() == 5
     
-    trade_log = pd.read_csv(CSV_FILE) if os.path.exists(CSV_FILE) else pd.DataFrame(columns=['Date', 'Symbol', 'Status', 'Buy_Price'])
+    if os.path.exists(CSV_FILE):
+        trade_log = pd.read_csv(CSV_FILE)
+    else:
+        trade_log = pd.DataFrame(columns=['Date', 'Symbol', 'Status', 'Buy_Price'])
     
     notifications = []
     total_value = 0
@@ -50,15 +59,15 @@ def main():
 
     for symbol in SYMBOLS:
         df = get_stock_data(symbol)
-        df = calculate_signals(df)
+        if df.empty: continue
         
+        df = calculate_signals(df)
         last_row = df.iloc[-1]
         current_price = last_row['Close']
         
-        # 1. 前日のsignalをholdingに更新（寄付き価格をセット）
+        # 1. 前日のsignalをholdingに更新
         mask = (trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'signal')
         if mask.any():
-            # シグナル翌日のOpen(つまり今回のデータの中の最新Open)を取得
             trade_log.loc[mask, 'Buy_Price'] = last_row['Open']
             trade_log.loc[mask, 'Status'] = 'holding'
 
@@ -70,23 +79,22 @@ def main():
 
         # 3. 評価額計算
         holdings = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
-        num_shares = len(holdings)
-        if num_shares > 0:
+        if not holdings.empty:
+            num_shares = len(holdings)
             holding_count += num_shares
-            cost_basis = holdings['Buy_Price'].sum()
+            cost_basis = pd.to_numeric(holdings['Buy_Price']).sum()
             market_value = current_price * num_shares
             total_value += market_value
             total_profit += (market_value - cost_basis)
 
     trade_log.to_csv(CSV_FILE, index=False)
 
-    # Discord通知作成
     msg = f"📅 **{today_jt.strftime('%Y-%m-%d')} トレード報告**\n"
     msg += "\n".join(notifications) if notifications else "シグナルなし"
     msg += f"\n\n📊 **現在の状況**\n保有数: {holding_count}株\n評価額: ${total_value:.2f}\n含み損益: ${total_profit:.2f}"
     
     if is_saturday:
-        msg += "\n\n週報: 今週もお疲れ様でした。履歴はGitHubを確認してください。"
+        msg += "\n\n週報: 今週もお疲れ様でした。"
 
     if DISCORD_WEBHOOK_URL:
         webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
