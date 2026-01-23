@@ -52,9 +52,6 @@ def main():
         df = calculate_signals(df)
         last_row = df.tail(1).iloc[0]
         last_date_str = last_row.name.strftime('%Y-%m-%d')
-        
-        # 市場が休みの日の考慮: 最新データの日付が本日(米国時間)でない場合はシグナル判定をスキップ
-        # ※日本時間18時は米国時間の当日早朝(または深夜)なので、前営業日のデータで判定
         current_price = float(last_row['Close'])
         
         # 1. 前日のsignalをholdingに更新
@@ -63,7 +60,7 @@ def main():
             trade_log.loc[mask, 'Buy_Price'] = float(last_row['Open'])
             trade_log.loc[mask, 'Status'] = 'holding'
 
-        # 2. 新規買いシグナル判定 (市場が動いた日のみ)
+        # 2. 新規買いシグナル判定
         if bool(last_row['buy_signal']):
             exists = trade_log[(trade_log['Date'] == last_date_str) & (trade_log['Symbol'] == symbol)].any().any()
             if not exists:
@@ -94,17 +91,17 @@ def main():
     msg += "\n\n📊 **保有銘柄状況**\n"
     msg += "\n\n".join(symbol_status)
     
-    # 土曜日限定：1週間の購入履歴（最新のsignalからholdingになった銘柄）を表示
+    # 土曜日限定：1週間の購入履歴
     if is_saturday:
         msg += "\n\n📜 **【週報】今週の購入履歴**\n"
-        one_ week_ago = (today_jt - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-        # 直近7日間に購入(holding)されたログを抽出
+        one_week_ago = (today_jt - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
         weekly_trades = trade_log[(trade_log['Date'] >= one_week_ago) & (trade_log['Status'] == 'holding')]
         
         if not weekly_trades.empty:
             history_text = ""
             for _, row in weekly_trades.iterrows():
-                history_text += f"・{row['Date']} : {row['Symbol']}を${row['Buy_Price']:.2f}で購入\n"
+                buy_p = float(row['Buy_Price'])
+                history_text += f"・{row['Date']} : {row['Symbol']}を${buy_p:.2f}で購入\n"
             msg += history_text
         else:
             msg += "今週の購入履歴はありません。"
