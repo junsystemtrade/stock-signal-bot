@@ -12,26 +12,32 @@ DISCORD_WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL')
 
 def get_stock_data(symbol):
     filename = f"{symbol}_history.csv"
-    headers = {'User-Agent': 'Mozilla/5.0'}
     
     for attempt in range(3):
         try:
-            # yfinance v0.2.50以降の仕様に合わせた取得
-            df = yf.download(symbol, period='1y', headers=headers, progress=False, multi_level_download=False)
+            # 引数から headers を削除し、最新仕様に対応
+            df = yf.download(symbol, period='1y', progress=False, multi_level_download=False)
             
             if not df.empty:
+                # 多重インデックスの解除
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
+                
+                # インデックスを確実に日付型に変換
                 df.index = pd.to_datetime(df.index)
                 df.to_csv(filename)
                 return df
+            
             time.sleep(2)
         except Exception as e:
-            print(f"Error fetching {symbol}: {e}")
+            print(f"Attempt {attempt+1} Error for {symbol}: {e}")
             time.sleep(2)
 
+    # 失敗した場合はCSVを読み込む
     if os.path.exists(filename):
-        return pd.read_csv(filename, index_col=0, parse_dates=True)
+        df_old = pd.read_csv(filename, index_col=0)
+        df_old.index = pd.to_datetime(df_old.index) # ここで確実に日付型にする
+        return df_old
     return pd.DataFrame()
 
 def calculate_signals(df):
@@ -46,12 +52,14 @@ def main():
     today_jt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
     is_saturday = today_jt.weekday() == 5
     
-    # --- 重要：CSVの読み込みロジックを修正 ---
+    # トレードログの読み込み
     if os.path.exists(CSV_FILE):
         try:
             trade_log = pd.read_csv(CSV_FILE)
-            # 文字列として読み込まれた数値を数値型に変換
             trade_log['Buy_Price'] = pd.to_numeric(trade_log['Buy_Price'], errors='coerce').fillna(0)
+            # Statusの余計な空白を削除
+            if 'Status' in trade_log.columns:
+                trade_log['Status'] = trade_log['Status'].astype(str).str.strip()
         except Exception as e:
             print(f"CSV read error: {e}")
             trade_log = pd.DataFrame(columns=['Date', 'Symbol', 'Status', 'Buy_Price'])
@@ -66,23 +74,27 @@ def main():
         current_price = 0
         
         if not df.empty:
-            valid_df = df.dropna(subset=['Close'])
+            # Closeがある最新の行を特定
+            valid_df = df.dropna(subset=['Close']).copy()
             if not valid_df.empty:
                 last_row = valid_df.tail(1)
                 current_price = float(last_row['Close'].iloc[0])
-                last_date_str = last_row.index[0].strftime('%Y-%m-%d')
+                
+                # インデックスから日付を取得（ここを修正）
+                last_date = last_row.index[0]
+                last_date_str = last_date.strftime('%Y-%m-%d')
 
                 if len(valid_df) >= 14:
-                    valid_df = calculate_signals(valid_df.copy())
+                    valid_df = calculate_signals(valid_df)
                     sig_row = valid_df.tail(1)
                     
-                    # 1. 前日のシグナル更新
+                    # シグナル更新
                     mask = (trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'signal')
                     if mask.any():
                         trade_log.loc[mask, 'Buy_Price'] = float(sig_row['Open'].iloc[0])
                         trade_log.loc[mask, 'Status'] = 'holding'
 
-                    # 2. 新規シグナル判定
+                    # 新規シグナル
                     if bool(sig_row['buy_signal'].iloc[0]):
                         exists = trade_log[(trade_log['Date'] == last_date_str) & (trade_log['Symbol'] == symbol)].any().any()
                         if not exists:
@@ -90,17 +102,14 @@ def main():
                             trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
                             notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
 
-        # --- 保有銘柄の集計 ---
-        # スペースなどの表記揺れ対策として strip() を適用
-        holdings = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'].str.strip() == 'holding')]
+        # 保有状況の集計
+        holdings = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
         num_shares = len(holdings)
         current_value = current_price * num_shares
         
-        profit_str = "$0.00"
-        if num_shares > 0:
-            cost_basis = holdings['Buy_Price'].sum()
-            profit = current_value - cost_basis
-            profit_str = f"${profit:+.2f}"
+        cost_basis = holdings['Buy_Price'].sum()
+        profit = current_value - cost_basis
+        profit_str = f"${profit:+.2f}"
         
         status_text = (
             f"【{symbol}】\n"
@@ -109,7 +118,6 @@ def main():
         )
         symbol_status.append(status_text)
 
-    # 上書き保存（既存のデータを維持）
     trade_log.to_csv(CSV_FILE, index=False)
 
     msg = f"📅 **{today_jt.strftime('%Y-%m-%d')} トレード報告**\n\n"
@@ -121,7 +129,7 @@ def main():
     if is_saturday:
         msg += "\n\n📜 **【週報】今週の購入履歴**\n"
         one_week_ago = (today_jt - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
-        weekly_trades = trade_log[(trade_log['Date'] >= one_week_ago) & (trade_log['Status'].str.strip() == 'holding')]
+        weekly_trades = trade_log[(trade_log['Date'] >= one_week_ago) & (trade_log['Status'] == 'holding')]
         if not weekly_trades.empty:
             history_text = "\n".join([f"・{r['Date']} : {r['Symbol']}を${float(r['Buy_Price']):.2f}で購入" for _, r in weekly_trades.iterrows()])
             msg += history_text
