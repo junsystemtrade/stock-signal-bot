@@ -1,0 +1,4 @@
+pandas
+yfinance
+pandas_ta
+discord.py
