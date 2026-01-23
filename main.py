@@ -32,6 +32,7 @@ def calculate_signals(df):
     return df
 
 def main():
+    # 日本時間 (JST)
     today_jt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
     is_saturday = today_jt.weekday() == 5
     
@@ -41,10 +42,7 @@ def main():
         trade_log = pd.DataFrame(columns=['Date', 'Symbol', 'Status', 'Buy_Price'])
     
     notifications = []
-    symbol_status = [] # 銘柄ごとのステータスを格納
-    total_value = 0
-    total_profit = 0
-    total_holding_count = 0
+    symbol_status = []
 
     for symbol in SYMBOLS:
         df = get_stock_data(symbol)
@@ -53,6 +51,10 @@ def main():
         
         df = calculate_signals(df)
         last_row = df.tail(1).iloc[0]
+        last_date_str = last_row.name.strftime('%Y-%m-%d')
+        
+        # 市場が休みの日の考慮: 最新データの日付が本日(米国時間)でない場合はシグナル判定をスキップ
+        # ※日本時間18時は米国時間の当日早朝(または深夜)なので、前営業日のデータで判定
         current_price = float(last_row['Close'])
         
         # 1. 前日のsignalをholdingに更新
@@ -61,30 +63,27 @@ def main():
             trade_log.loc[mask, 'Buy_Price'] = float(last_row['Open'])
             trade_log.loc[mask, 'Status'] = 'holding'
 
-        # 2. 新規買いシグナル判定
+        # 2. 新規買いシグナル判定 (市場が動いた日のみ)
         if bool(last_row['buy_signal']):
-            today_str = last_row.name.strftime('%Y-%m-%d')
-            exists = trade_log[(trade_log['Date'] == today_str) & (trade_log['Symbol'] == symbol)].any().any()
+            exists = trade_log[(trade_log['Date'] == last_date_str) & (trade_log['Symbol'] == symbol)].any().any()
             if not exists:
-                new_row = {'Date': today_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0}
+                new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0}
                 trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
                 notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
 
         # 3. 銘柄別保有数と評価額の計算
         holdings = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
         num_shares = len(holdings)
-        total_holding_count += num_shares
+        current_value = current_price * num_shares
         
-        profit_info = ""
+        profit_str = "$0.00"
         if num_shares > 0:
             cost_basis = pd.to_numeric(holdings['Buy_Price']).sum()
-            market_value = current_price * num_shares
-            profit = market_value - cost_basis
-            total_value += market_value
-            total_profit += profit
-            profit_info = f" (${profit:+.2f})"
+            profit = current_value - cost_basis
+            profit_str = f"${profit:+.2f}"
         
-        symbol_status.append(f"・{symbol}: {num_shares}株{profit_info}")
+        status_text = f"**【{symbol}】**\n保有数: {num_shares}株\n評価額: ${current_value:.2f} (損益: {profit_str})"
+        symbol_status.append(status_text)
 
     # データを保存
     trade_log.to_csv(CSV_FILE, index=False)
@@ -92,12 +91,23 @@ def main():
     # 通知メッセージ作成
     msg = f"📅 **{today_jt.strftime('%Y-%m-%d')} トレード報告**\n"
     msg += "\n".join(notifications) if notifications else "✅ シグナルなし"
-    msg += "\n\n📊 **現在の保有状況**\n"
-    msg += "\n".join(symbol_status)
-    msg += f"\n\n💰 **合計**\n総保有数: {total_holding_count}株\n総評価額: ${total_value:.2f}\n総含み損益: ${total_profit:.2f}"
+    msg += "\n\n📊 **保有銘柄状況**\n"
+    msg += "\n\n".join(symbol_status)
     
+    # 土曜日限定：1週間の購入履歴（最新のsignalからholdingになった銘柄）を表示
     if is_saturday:
-        msg += "\n\n☕ **週報**: 今週の運用データが更新されました。お疲れ様でした。"
+        msg += "\n\n📜 **【週報】今週の購入履歴**\n"
+        one_ week_ago = (today_jt - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
+        # 直近7日間に購入(holding)されたログを抽出
+        weekly_trades = trade_log[(trade_log['Date'] >= one_week_ago) & (trade_log['Status'] == 'holding')]
+        
+        if not weekly_trades.empty:
+            history_text = ""
+            for _, row in weekly_trades.iterrows():
+                history_text += f"・{row['Date']} : {row['Symbol']}を${row['Buy_Price']:.2f}で購入\n"
+            msg += history_text
+        else:
+            msg += "今週の購入履歴はありません。"
 
     if DISCORD_WEBHOOK_URL:
         webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
