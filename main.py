@@ -14,6 +14,11 @@ def get_stock_data(symbol):
         df = yf.download(symbol, period='1y')
         if df.empty:
             return pd.DataFrame()
+
+        # 株価データをCSVとして保存（リポジトリに残す用）
+        # 銘柄ごとに分ける場合は symbol をファイル名に含めます
+        df.to_csv(f"{symbol}_history.csv")
+        
         return df
     except Exception as e:
         print(f"Error fetching {symbol}: {e}")
