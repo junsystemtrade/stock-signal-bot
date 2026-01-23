@@ -57,36 +57,43 @@ def main():
 
     for symbol in SYMBOLS:
         df = get_stock_data(symbol)
-        if df.empty or len(df) < 14:
-            continue
         
-        df = calculate_signals(df)
-        last_row = df.tail(1).iloc[0]
-        last_date_str = last_row.name.strftime('%Y-%m-%d')
-        current_price = float(last_row['Close'])
+        # 株価の初期値
+        current_price = 0
         
-        # 1. 前日のsignalをholdingに更新
-        mask = (trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'signal')
-        if mask.any():
-            trade_log.loc[mask, 'Buy_Price'] = float(last_row['Open'])
-            trade_log.loc[mask, 'Status'] = 'holding'
+        # --- データがある場合のみシグナル計算 ---
+        if not df.empty:
+            current_price = float(df.tail(1).iloc[0]['Close'])
+            
+            if len(df) >= 14:
+                df = calculate_signals(df)
+                last_row = df.tail(1).iloc[0]
+                last_date_str = last_row.name.strftime('%Y-%m-%d')
+                
+                # 1. 前日のsignalをholdingに更新
+                mask = (trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'signal')
+                if mask.any():
+                    trade_log.loc[mask, 'Buy_Price'] = float(last_row['Open'])
+                    trade_log.loc[mask, 'Status'] = 'holding'
 
-        # 2. 新規買いシグナル判定
-        if bool(last_row['buy_signal']):
-            exists = trade_log[(trade_log['Date'] == last_date_str) & (trade_log['Symbol'] == symbol)].any().any()
-            if not exists:
-                new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0}
-                trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
-                notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
+                # 2. 新規買いシグナル判定
+                if bool(last_row['buy_signal']):
+                    exists = trade_log[(trade_log['Date'] == last_date_str) & (trade_log['Symbol'] == symbol)].any().any()
+                    if not exists:
+                        new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0}
+                        trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
+                        notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
 
-        # 3. 銘柄別保有状況の計算
+        # --- 保有状況の計算（データ取得の成否に関わらず必ず実行） ---
         holdings = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
         num_shares = len(holdings)
         current_value = current_price * num_shares
         
         profit_str = "$0.00"
         if num_shares > 0:
-            cost_basis = pd.to_numeric(holdings['Buy_Price']).sum()
+            # 数値として確実に計算
+            buy_prices = pd.to_numeric(holdings['Buy_Price'], errors='coerce').fillna(0)
+            cost_basis = buy_prices.sum()
             profit = current_value - cost_basis
             profit_str = f"${profit:+.2f}"
         
@@ -114,6 +121,7 @@ def main():
     if is_saturday:
         msg += "\n\n📜 **【週報】今週の購入履歴**\n"
         one_week_ago = (today_jt - datetime.timedelta(days=7)).strftime('%Y-%m-%d')
+        # 文字列比較を確実にするため
         weekly_trades = trade_log[(trade_log['Date'] >= one_week_ago) & (trade_log['Status'] == 'holding')]
         
         if not weekly_trades.empty:
