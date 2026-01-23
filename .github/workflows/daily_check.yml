@@ -34,10 +34,10 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          # ファイルが存在する場合のみaddする
-          if [ -f trade_history.csv ]; then
-            git add trade_history.csv
-          fi
-          # 変更がある場合のみコミット
-          git commit -m "Update trade history [skip ci]" || echo "No changes to commit"
+          
+          # フォルダ内のすべてのCSVファイルをadd対象にする
+          git add *.csv
+          
+          # 変更がある場合のみコミット（メッセージも少し分かりやすく変更）
+          git commit -m "Update trade history and stock price data [skip ci]" || echo "No changes to commit"
           git push
