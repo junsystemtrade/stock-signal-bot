@@ -65,3 +65,7 @@ def main():
         print("❌ CRITICAL: DISCORD_WEBHOOK_URL is empty. Check GitHub Secrets.")
 
     print("--- Execution Finished ---")
+    
+# --- 以下の2行を必ず追加してください ---
+if __name__ == "__main__":
+    main()
