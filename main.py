@@ -2,6 +2,9 @@ import os
 import datetime
 import pandas as pd
 from discord import SyncWebhook
+# --- 追加：保存するファイル名を定義 ---
+CSV_FILE = "trade_history.csv" 
+
 
 # --- 冒頭に追加 ---
 # 環境変数を直接取得（グローバルで定義されていることを想定）
