@@ -102,15 +102,43 @@ def main():
         profit_str = f"${(current_value - cost_basis):+.2f}"
         symbol_status.append(f"【{symbol}】\n保有数: {num_shares}株\n評価額: ${current_value:.2f}（損益: {profit_str}）")
 
+    # 4. CSVの保存
     trade_log.to_csv(CSV_FILE, index=False)
 
-    # 通知メッセージ
+    # 5. 通知メッセージの作成
     msg = f"📅 **{today_jt.strftime('%Y-%m-%d')} トレード報告**\n\n📢 **シグナル判定**\n"
     msg += "\n".join(notifications) if notifications else "✅ シグナルなし"
     msg += f"\n\n📊 **保有銘柄状況**\n" + "\n\n".join(symbol_status)
 
+    # 日本時間の土曜日（weekday == 5）のみ週報を表示
+    if today_jt.weekday() == 5:
+        msg += "\n\n📜 **【週報】米国市場（月〜金）の購入履歴**\n"
+        
+        # 直近の月曜日（5日前）と金曜日（1日前）の範囲を設定
+        this_monday = (today_jt - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+        this_friday = (today_jt - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        # 月〜金の期間内に 'holding' になった行を抽出
+        weekly_trades = trade_log[
+            (trade_log['Date'] >= this_monday) & 
+            (trade_log['Date'] <= this_friday) & 
+            (trade_log['Status'] == 'holding')
+        ]
+        
+        if not weekly_trades.empty:
+            weekly_trades = weekly_trades.sort_values('Date')
+            history_text = "\n".join([
+                f"・{r['Date']} : {r['Symbol']} を ${float(r['Buy_Price']):.2f} で購入" 
+                for _, r in weekly_trades.iterrows()
+            ])
+            msg += history_text
+        else:
+            msg += "今週（月〜金）の購入履歴はありません。"
+
+    # 6. 送信処理
     if DISCORD_WEBHOOK_URL:
         SyncWebhook.from_url(DISCORD_WEBHOOK_URL).send(msg)
+    
     print("--- ✅ Execution Finished ---")
 
 if __name__ == "__main__":
