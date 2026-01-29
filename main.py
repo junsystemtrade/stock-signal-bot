@@ -5,6 +5,10 @@ from discord import SyncWebhook
 # --- 追加：保存するファイル名を定義 ---
 CSV_FILE = "trade_history.csv" 
 
+# --- 定義を追加 ---
+CSV_FILE = "trade_log.csv"
+SYMBOLS = ["JMIA", "NU"]  # ← ここに調べたい銘柄のティッカーを入れてください
+
 
 # --- 冒頭に追加 ---
 # 環境変数を直接取得（グローバルで定義されていることを想定）
