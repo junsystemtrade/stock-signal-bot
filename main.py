@@ -245,9 +245,14 @@ def main():
     if today_jst.weekday() == 6 or today_jst in holidays.Japan():
         msg += "\n\nPrev business day report."
 
-    if DISCORD_WEBHOOK_URL:
-        SyncWebhook.from_url(DISCORD_WEBHOOK_URL).send(msg)
+        if DISCORD_WEBHOOK_URL:
+        webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
+        # 2000文字制限のため分割して送信
+        chunk_size = 1900
+        for i in range(0, len(msg), chunk_size):
+            webhook.send(msg[i:i+chunk_size])
         print("Discord notification sent.")
+
 
     print(msg)
     print("--- Execution Finished ---")
