@@ -265,6 +265,6 @@ if __name__ == "__main__":
 
 ---
 
-**trade_history.csv（全文）**
+# **trade_history.csv（全文）**
 ```
 Date,Symbol,Status,Buy_Price
