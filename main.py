@@ -247,7 +247,7 @@ def main():
     if today_jst.weekday() == 6 or today_jst in holidays.Japan():
         msg += "\n\n📌 **前営業日データの通知**"
 
-    # Discord送信（2000文字制限対応）
+    # Discord送信
     if DISCORD_WEBHOOK_URL:
         webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
         chunk_size = 1900
@@ -261,10 +261,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
----
-
-# **trade_history.csv（全文）**
-```
-Date,Symbol,Status,Buy_Price
