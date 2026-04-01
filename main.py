@@ -110,15 +110,15 @@ def check_exit(symbol, buy_price, current_row):
     pnl = (current_price - buy_price) / buy_price if buy_price > 0 else 0
 
     if pnl <= cfg.get('stop_loss', -0.07):
-        return True, f"損切り ({pnl*100:.1f}%)"
+        return True, f"🛑 損切り ({pnl*100:.1f}%)"
 
     stoch_exit = cfg.get('stoch_exit')
     if stoch_exit and float(current_row.get('STOCHk', 0)) >= stoch_exit:
-        return True, f"利確 ストキャス過熱 ({pnl*100:.1f}%)"
+        return True, f"✅ 利確 ストキャス過熱 ({pnl*100:.1f}%)"
 
     if cfg.get('trend_exit') and 'MA50' in current_row.index:
         if current_price < float(current_row['MA50']):
-            return True, f"トレンド割れ撤退 ({pnl*100:.1f}%)"
+            return True, f"📉 トレンド割れ撤退 ({pnl*100:.1f}%)"
 
     return False, ""
 
@@ -154,12 +154,12 @@ def main():
     for symbol in SYMBOLS:
         df = get_stock_data(symbol, today_us)
         if df is None or df.empty:
-            symbol_status.append(f"[{symbol}] market closed or data error")
+            symbol_status.append(f"【{symbol}】\n⚠️ 米国市場休場またはデータ取得失敗")
             continue
 
         valid_df = df.dropna(subset=['Close']).copy()
         if len(valid_df) < 200:
-            symbol_status.append(f"[{symbol}] data insufficient ({len(valid_df)} rows)")
+            symbol_status.append(f"【{symbol}】\n⚠️ データ不足（{len(valid_df)}件）")
             continue
 
         valid_df = add_indicators(valid_df)
@@ -183,7 +183,7 @@ def main():
                 should_exit, reason = check_exit(symbol, buy_price, last_row)
                 if should_exit:
                     trade_log.at[idx, 'Status'] = 'closed'
-                    exit_notifications.append(f"{symbol} exit: {reason}")
+                    exit_notifications.append(f"🔔 **{symbol}** エグジット: {reason}")
 
         # 冷却期間チェック（直近7日）
         recent_cutoff = (valid_df.index[-1] - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
@@ -201,7 +201,7 @@ def main():
             if not exists:
                 new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0.0}
                 trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
-                notifications.append(f"BUY SIGNAL: {symbol} ({last_date_str})")
+                notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
 
         # 保有状況集計
         holdings    = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
@@ -209,21 +209,22 @@ def main():
         current_val = current_price * num_shares
         cost_basis  = holdings['Buy_Price'].sum()
         profit_str  = f"${(current_val - cost_basis):+.2f}"
-        stoch_str   = f"%K={last_row['STOCHk']:.1f} %D={last_row['STOCHd']:.1f}"
 
         symbol_status.append(
-            f"[{symbol}] shares={num_shares} value=${current_val:.2f} pnl={profit_str} price=${current_price:.2f} {stoch_str}"
+            f"【{symbol}】\n保有数: {num_shares}株\n評価額: ${current_val:.2f}（損益: {profit_str}）"
         )
 
     trade_log.to_csv(CSV_FILE, index=False)
 
-    msg = f"Trade Report {today_jst}\n\n"
-    msg += "Signals:\n"
-    msg += "\n".join(notifications) if notifications else "No signal"
+    # 通知作成
+    msg = f"📅 **{today_jst} トレード報告**\n\n"
+    msg += "📢 **シグナル判定**\n"
+    msg += "\n".join(notifications) if notifications else "✅ シグナルなし"
     if exit_notifications:
-        msg += "\nExits:\n" + "\n".join(exit_notifications)
-    msg += "\n\nPositions:\n" + "\n".join(symbol_status)
+        msg += "\n\n🔔 **エグジット通知**\n" + "\n".join(exit_notifications)
+    msg += "\n\n📊 **保有銘柄状況**\n" + "\n\n".join(symbol_status)
 
+    # 週次レポート（土曜JST）
     if today_jst.weekday() == 5:
         monday = today_jst - datetime.timedelta(days=today_jst.weekday())
         friday = monday + datetime.timedelta(days=4)
@@ -232,23 +233,23 @@ def main():
             (trade_log['Date'] <= str(friday)) &
             (trade_log['Status'].isin(['holding', 'closed']))
         ]
-        msg += "\n\nWeekly Report:\n"
+        msg += "\n\n📜 **【週報】今週の取引履歴**\n"
         if not weekly.empty:
             weekly = weekly.sort_values('Date')
             msg += "\n".join(
-                [f"{r['Date']} {r['Symbol']} ${float(r['Buy_Price']):.2f} [{r['Status']}]"
+                [f"・{r['Date']} : {r['Symbol']} ${float(r['Buy_Price']):.2f} [{r['Status']}]"
                  for _, r in weekly.iterrows()]
             )
         else:
-            msg += "No trades this week."
+            msg += "今週の取引はありません。"
 
+    # 前営業日通知（日曜・祝日JST）
     if today_jst.weekday() == 6 or today_jst in holidays.Japan():
-        msg += "\n\nPrev business day report."
+        msg += "\n\n📌 **前営業日データの通知**"
 
-    # Discord通知処理のインデントを修正
+    # Discord送信（2000文字制限対応）
     if DISCORD_WEBHOOK_URL:
         webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
-        # 2000文字制限のため分割して送信
         chunk_size = 1900
         for i in range(0, len(msg), chunk_size):
             webhook.send(msg[i:i+chunk_size])
@@ -260,3 +261,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
+
+---
+
+**trade_history.csv（全文）**
+```
+Date,Symbol,Status,Buy_Price
