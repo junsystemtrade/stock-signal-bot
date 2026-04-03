@@ -54,18 +54,8 @@ def nu_signal(df):
 
 
 SIGNAL_CONFIG = {
-    'JMIA': {
-        'func':       jmia_signal,
-        'stop_loss':  -0.07,
-        'stoch_exit': 80,
-        'trend_exit': False,
-    },
-    'NU': {
-        'func':       nu_signal,
-        'stop_loss':  -0.05,
-        'stoch_exit': None,
-        'trend_exit': True,
-    },
+    'JMIA': {'func': jmia_signal},
+    'NU':   {'func': nu_signal},
 }
 
 # =============================
@@ -101,29 +91,6 @@ def get_stock_data(symbol, date_today_us):
 
 
 # =============================
-# エグジット判定
-# =============================
-
-def check_exit(symbol, buy_price, current_row):
-    cfg = SIGNAL_CONFIG.get(symbol, {})
-    current_price = float(current_row['Close'])
-    pnl = (current_price - buy_price) / buy_price if buy_price > 0 else 0
-
-    if pnl <= cfg.get('stop_loss', -0.07):
-        return True, f"🛑 損切り ({pnl*100:.1f}%)"
-
-    stoch_exit = cfg.get('stoch_exit')
-    if stoch_exit and float(current_row.get('STOCHk', 0)) >= stoch_exit:
-        return True, f"✅ 利確 ストキャス過熱 ({pnl*100:.1f}%)"
-
-    if cfg.get('trend_exit') and 'MA50' in current_row.index:
-        if current_price < float(current_row['MA50']):
-            return True, f"📉 トレンド割れ撤退 ({pnl*100:.1f}%)"
-
-    return False, ""
-
-
-# =============================
 # メイン処理
 # =============================
 
@@ -147,9 +114,8 @@ def main():
     else:
         trade_log = pd.DataFrame(columns=cols)
 
-    notifications      = []
-    symbol_status      = []
-    exit_notifications = []
+    notifications = []
+    symbol_status = []
 
     for symbol in SYMBOLS:
         df = get_stock_data(symbol, today_us)
@@ -175,16 +141,6 @@ def main():
             trade_log.loc[mask_signal, 'Buy_Price'] = float(last_row['Open'])
             trade_log.loc[mask_signal, 'Status']    = 'holding'
 
-        # 保有ポジションのエグジット確認
-        holdings_mask = (trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')
-        if holdings_mask.any():
-            for idx in trade_log[holdings_mask].index:
-                buy_price = float(trade_log.at[idx, 'Buy_Price'])
-                should_exit, reason = check_exit(symbol, buy_price, last_row)
-                if should_exit:
-                    trade_log.at[idx, 'Status'] = 'closed'
-                    exit_notifications.append(f"🔔 **{symbol}** エグジット: {reason}")
-
         # 冷却期間チェック（直近7日）
         recent_cutoff = (valid_df.index[-1] - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
         recent_trades = trade_log[
@@ -203,7 +159,7 @@ def main():
                 trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
                 notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
 
-        # 保有状況集計
+        # 保有状況集計（holdingのみ、エグジットなし）
         holdings    = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
         num_shares  = len(holdings)
         current_val = current_price * num_shares
@@ -220,8 +176,6 @@ def main():
     msg = f"📅 **{today_jst} トレード報告**\n\n"
     msg += "📢 **シグナル判定**\n"
     msg += "\n".join(notifications) if notifications else "✅ シグナルなし"
-    if exit_notifications:
-        msg += "\n\n🔔 **エグジット通知**\n" + "\n".join(exit_notifications)
     msg += "\n\n📊 **保有銘柄状況**\n" + "\n\n".join(symbol_status)
 
     # 週次レポート（土曜JST）
@@ -231,13 +185,13 @@ def main():
         weekly = trade_log[
             (trade_log['Date'] >= str(monday)) &
             (trade_log['Date'] <= str(friday)) &
-            (trade_log['Status'].isin(['holding', 'closed']))
+            (trade_log['Status'] == 'holding')
         ]
         msg += "\n\n📜 **【週報】今週の取引履歴**\n"
         if not weekly.empty:
             weekly = weekly.sort_values('Date')
             msg += "\n".join(
-                [f"・{r['Date']} : {r['Symbol']} ${float(r['Buy_Price']):.2f} [{r['Status']}]"
+                [f"・{r['Date']} : {r['Symbol']} ${float(r['Buy_Price']):.2f}"
                  for _, r in weekly.iterrows()]
             )
         else:
@@ -247,7 +201,7 @@ def main():
     if today_jst.weekday() == 6 or today_jst in holidays.Japan():
         msg += "\n\n📌 **前営業日データの通知**"
 
-    # Discord送信
+    # Discord送信（2000文字制限対応）
     if DISCORD_WEBHOOK_URL:
         webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
         chunk_size = 1900
