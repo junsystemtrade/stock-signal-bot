@@ -38,16 +38,21 @@ def add_indicators(df):
 
 
 def jmia_signal(df):
-    oversold = (df['STOCHk'] <= 10) & (df['STOCHd'] <= 10)
-    cross_up = (df['STOCHk'].shift(1) < df['STOCHd'].shift(1)) & (df['STOCHk'] > df['STOCHd'])
-    vol_ok   = ((df['High'] - df['Low']) / df['Close'].replace(0, 1)) > 0.05
-    macd_up  = (df['MACD'].shift(1) < df['MACD_signal'].shift(1)) & (df['MACD'] > df['MACD_signal'])
+    # 【修正】売られすぎ水準を10→20へ緩和
+    oversold = (df['STOCHk'] <= 20) | (df['STOCHd'] <= 20)
+    # 【修正】クロス判定を確実に（当日クロスまたはクロス直後）
+    cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
+    # 【修正】ボラティリティ条件を5%→3%へ緩和
+    vol_ok   = ((df['High'] - df['Low']) / df['Close'].replace(0, 1)) > 0.03
+    # 【修正】MACDは「クロスした瞬間」限定だとタイミングが合いにくいため「シグナルより上（上向き）」に変更
+    macd_up  = df['MACD'] > df['MACD_signal']
     return oversold & cross_up & vol_ok & macd_up
 
 
 def nu_signal(df):
     trend_ok = (df['MA50'] > df['MA200']) & (df['Close'] > df['MA50'])
-    pullback = (df['STOCHk'] <= 30) & (df['STOCHk'] > 20)
+    # 【修正】押し目のストキャス範囲を30-20から、40-15へ拡大
+    pullback = (df['STOCHk'] <= 40) & (df['STOCHk'] > 15)
     cross_up = (df['STOCHk'].shift(1) < df['STOCHd'].shift(1)) & (df['STOCHk'] > df['STOCHd'])
     macd_ok  = df['MACD'] > df['MACD_signal']
     return trend_ok & pullback & cross_up & macd_ok
@@ -203,11 +208,14 @@ def main():
 
     # Discord送信（2000文字制限対応）
     if DISCORD_WEBHOOK_URL:
-        webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
-        chunk_size = 1900
-        for i in range(0, len(msg), chunk_size):
-            webhook.send(msg[i:i+chunk_size])
-        print("Discord notification sent.")
+        try:
+            webhook = SyncWebhook.from_url(DISCORD_WEBHOOK_URL)
+            chunk_size = 1900
+            for i in range(0, len(msg), chunk_size):
+                webhook.send(msg[i:i+chunk_size])
+            print("Discord notification sent.")
+        except Exception as e:
+            print(f"Discord send error: {e}")
 
     print(msg)
     print("--- Execution Finished ---")
