@@ -3,7 +3,7 @@ import yfinance as yf
 import holidays
 from datetime import datetime
 
-# --- シグナルロジック（提示されたものと同期） ---
+# --- シグナルロジック（メインソースと同期） ---
 
 def add_indicators(df):
     df = df.copy()
@@ -33,10 +33,10 @@ def get_nu_signal(df):
     macd_ok  = df['MACD'] > df['MACD_signal']
     return trend_ok & pullback & cross_up & macd_ok
 
-# --- バックテスト実行エンジン ---
+# --- バックテスト実行 ---
 
 def run_backtest(symbol, signal_func):
-    print(f"--- Backtesting {symbol} ---")
+    print(f"--- 【{symbol}】 バックテスト開始 ---")
     df = yf.download(symbol, period='1y', progress=False)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -49,37 +49,38 @@ def run_backtest(symbol, signal_func):
     buy_price = 0
     
     for i in range(1, len(df)):
-        # 冷却期間（7日）の簡易再現：直近7日にトレードがあればスキップ
-        recent_trade = any(t['buy_date'] > df.index[i] - pd.Timedelta(days=7) for t in trades)
+        # 冷却期間（7日）チェック
+        recent_trade = any(t['購入日'] > df.index[i] - pd.Timedelta(days=7) for t in trades)
         
-        # シグナル発生（翌日Openで買い）
+        # 買い実行（シグナル翌日の始値）
         if df['signal'].iloc[i-1] and not in_position and not recent_trade:
             buy_price = df['Open'].iloc[i]
             buy_date = df.index[i]
             in_position = True
             
-        # エグジットロジックがないため、便宜上5日後に売却して収益性を確認
-        elif in_position and (df.index[i] - buy_date).days >= 5:
+        # 簡易エグジット（購入から5営業日後に売却）
+        elif in_position and len(df.iloc[:i]) - len(df.loc[:buy_date]) >= 5:
             sell_price = df['Close'].iloc[i]
             profit = sell_price - buy_price
             trades.append({
-                'buy_date': buy_date,
-                'buy_price': buy_price,
-                'sell_date': df.index[i],
-                'sell_price': sell_price,
-                'profit': profit,
-                'return_%': (profit / buy_price) * 100
+                '購入日': buy_date.strftime('%Y-%m-%d'),
+                '購入単価': round(buy_price, 2),
+                '売却日': df.index[i].strftime('%Y-%m-%d'),
+                '売却単価': round(sell_price, 2),
+                '利益': round(profit, 2),
+                '騰落率(%)': round((profit / buy_price) * 100, 2)
             })
             in_position = False
 
     results = pd.DataFrame(trades)
     if not results.empty:
-        print(results)
-        print(f"Total Trades: {len(results)}")
-        print(f"Win Rate: {(results['profit'] > 0).mean():.2%}")
-        print(f"Total Return: ${results['profit'].sum():.2f}")
+        print(results.to_string(index=False))
+        print("-" * 30)
+        print(f"合計取引数  : {len(results)}回")
+        print(f"勝率        : {(results['利益'] > 0).mean():.2%}")
+        print(f"累計損益    : ${results['利益'].sum():.2f}")
     else:
-        print("No signals detected in the past year.")
+        print("過去1年間でシグナルは検出されませんでした。")
     print("\n")
 
 if __name__ == "__main__":
