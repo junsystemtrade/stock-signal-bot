@@ -2,42 +2,49 @@ name: Daily Stock Check
 
 on:
   schedule:
-    - cron: '0 9 * * *' # 日本時間18:00 (UTC 9:00)
-  workflow_dispatch: # 手動実行用
+    # 毎日 日本時間18:00 (UTC 9:00) に実行
+    - cron: '0 9 * * *'
+  workflow_dispatch: # 手動実行ボタンを有効化
 
 jobs:
   build:
+    name: 株価取得および更新
     runs-on: ubuntu-latest
-    permissions: # ここで明示的に権限を与えます
+    permissions:
+      # CSVの更新をリポジトリに書き込むために必要な権限
       contents: write
 
     steps:
-      - name: Checkout code
+      - name: リポジトリのチェックアウト
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Python環境のセットアップ
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: 依存ライブラリのインストール
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run script
+      - name: 株価チェックスクリプトの実行
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python main.py
 
-      - name: Commit and Push changes
+      - name: 変更内容のコミットとプッシュ
         run: |
+          # Gitユーザーの設定
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # フォルダ内のすべてのCSVファイルをadd対象にする
+          # フォルダ内のすべてのCSVファイルをステージングに追加
           git add *.csv
           
-          # 変更がある場合のみコミット（メッセージも少し分かりやすく変更）
-          git commit -m "Update trade history and stock price data [skip ci]" || echo "No changes to commit"
+          # 変更がある場合のみコミットし、変更がない場合はメッセージを出して終了
+          # コミットメッセージに [skip ci] を含めて無限ループを防止
+          git commit -m "取引履歴と株価データの更新 [skip ci]" || echo "コミットする変更はありません"
+          
+          # 変更をリポジトリへ反映
           git push
