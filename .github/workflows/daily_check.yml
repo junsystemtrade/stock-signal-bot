@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: 株価取得および更新
+    name: Daily Stock Check
     runs-on: ubuntu-latest
     permissions:
       # CSVの更新をリポジトリに書き込むために必要な権限
