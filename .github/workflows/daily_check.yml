@@ -6,6 +6,10 @@ on:
     - cron: '0 9 * * *'
   workflow_dispatch: # 手動実行ボタンを有効化
 
+env:
+  # Node.js 20 の非推奨警告を解消し、Node.js 24 で実行するように強制
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Daily Stock Check
