@@ -42,29 +42,19 @@ def add_indicators(df):
 
 def jmia_signal(df):
     """JMIA: 逆張り反転シグナル (緩和版)"""
-    # 売られすぎ水準を20に緩和 (10→20)
     oversold = (df['STOCHk'] <= 20) | (df['STOCHd'] <= 20)
-    # ストキャスのゴールデンクロス
     cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
-    # ボラティリティ条件を3%に緩和 (5%→3%)
     vol_ok   = ((df['High'] - df['Low']) / df['Close'].replace(0, 1)) > 0.03
-    # MACDがシグナルより上（上昇トレンドの芽）
     macd_up  = df['MACD'] > df['MACD_signal']
-    
     return oversold & cross_up & vol_ok & macd_up
 
 
 def nu_signal(df):
     """NU: 上昇トレンド中の押し目買い (緩和版)"""
-    # 50MAが200MAより上で、株価が50MAより上（長期上昇トレンド）
     trend_ok = (df['MA50'] > df['MA200']) & (df['Close'] > df['MA50'])
-    # 押し目の範囲を15〜40へ拡大 (20-30→15-40)
     pullback = (df['STOCHk'] <= 40) & (df['STOCHk'] > 15)
-    # ストキャスのゴールデンクロス
     cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
-    # MACDがシグナルより上
     macd_ok  = df['MACD'] > df['MACD_signal']
-    
     return trend_ok & pullback & cross_up & macd_ok
 
 
@@ -80,7 +70,7 @@ SIGNAL_CONFIG = {
 def get_stock_data(symbol, date_today_us):
     # 土日または米国祝日はスキップ
     if date_today_us.weekday() >= 5 or date_today_us in US_HOLIDAYS:
-        print(f"米国市場休場のためスキップ: {symbol}")
+        print(f"【情報】米国市場休場のためスキップ: {symbol}")
         return None
 
     filename = f"{symbol}_history.csv"
@@ -95,11 +85,12 @@ def get_stock_data(symbol, date_today_us):
                 return df
             time.sleep(2)
         except Exception as e:
-            print(f"データ取得エラー {symbol} (試行 {attempt+1}): {e}")
+            print(f"【エラー】データ取得失敗 {symbol} (試行 {attempt+1}/3): {e}")
             time.sleep(2)
 
     if os.path.exists(filename):
         try:
+            print(f"【警告】最新データ取得失敗。ローカルキャッシュを利用します: {symbol}")
             return pd.read_csv(filename, index_col=0, parse_dates=True)
         except Exception:
             return pd.DataFrame()
@@ -111,7 +102,7 @@ def get_stock_data(symbol, date_today_us):
 # =============================
 
 def main():
-    print("--- 処理開始 ---")
+    print("--- 株価チェック処理開始 ---")
 
     now_jst   = datetime.datetime.now(JST)
     today_jst = now_jst.date()
@@ -123,10 +114,11 @@ def main():
     if os.path.exists(CSV_FILE):
         try:
             trade_log = pd.read_csv(CSV_FILE)
-            trade_log['Buy_Price'] = pd.to_numeric(trade_log['Buy_Price'], errors='coerce').fillna(0)
+            trade_log['Buy_Price'] = pd.to_numeric(trade_log['Buy_Price'], errors='coerce').fillna(0.0)
             trade_log['Status']    = trade_log['Status'].astype(str).str.strip()
+            trade_log['Date']      = trade_log['Date'].astype(str)
         except Exception as e:
-            print(f"CSV読み込みエラー: {e}")
+            print(f"【エラー】CSV読み込みエラー: {e}")
             trade_log = pd.DataFrame(columns=cols)
     else:
         trade_log = pd.DataFrame(columns=cols)
@@ -142,7 +134,7 @@ def main():
 
         valid_df = df.dropna(subset=['Close']).copy()
         if len(valid_df) < 200:
-            symbol_status.append(f"【{symbol}】\n⚠️ 指標計算に必要なデータ不足")
+            symbol_status.append(f"【{symbol}】\n⚠️ 指標計算に必要なデータ不足 (最低200日分必要)")
             continue
 
         # 指標とシグナルの計算
@@ -160,6 +152,7 @@ def main():
         if mask_signal.any():
             trade_log.loc[mask_signal, 'Buy_Price'] = float(last_row['Open'])
             trade_log.loc[mask_signal, 'Status']    = 'holding'
+            print(f"【約定】{symbol} を始値 ${last_row['Open']:.2f} で保有ステータスに更新しました。")
 
         # 2. 冷却期間チェック（直近7日以内に取引があれば新規シグナルを無視）
         recent_cutoff = (valid_df.index[-1] - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
@@ -179,6 +172,7 @@ def main():
                 new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0.0}
                 trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
                 notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
+                print(f"【シグナル】{symbol} の買いシグナルを記録しました。")
 
         # 4. 現在の保有状況の集計
         holdings    = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
@@ -189,16 +183,17 @@ def main():
         profit_str  = f"${profit_loss:+.2f}"
 
         symbol_status.append(
-            f"【{symbol}】\n現在の株価: ${current_price:.2f}\n保有数: {num_shares}株\n評価額: ${current_val:.2f} (損益: {profit_str})"
+            f"【{symbol}】\n現在の株価: ${current_price:.2f}\n保有数: {num_shares}株\n評価額: ${current_val:.2f} (合計損益: {profit_str})"
         )
 
-    # 履歴を保存
+    # 重複を削除して保存
+    trade_log = trade_log.drop_duplicates(subset=['Date', 'Symbol', 'Status'], keep='first')
     trade_log.to_csv(CSV_FILE, index=False)
 
     # --- 通知メッセージ作成 ---
     msg = f"📅 **{today_jst} トレード報告**\n\n"
     msg += "📢 **シグナル判定**\n"
-    msg += "\n".join(notifications) if notifications else "✅ 新規シグナルなし"
+    msg += "\n".join(notifications) if notifications else "✅ 新規シグナルはありません"
     msg += "\n\n📊 **現在のステータス**\n" + "\n\n".join(symbol_status)
 
     # 週次レポート（土曜日のみ）
@@ -208,15 +203,15 @@ def main():
             (trade_log['Date'] >= monday) &
             (trade_log['Status'] == 'holding')
         ]
-        msg += "\n\n📜 **【週報】今週の取引履歴**\n"
+        msg += "\n\n📜 **【週報】今週の新規約定一覧**\n"
         if not weekly.empty:
-            msg += "\n".join([f"・{r['Date']} : {r['Symbol']} 買値 ${float(r['Buy_Price']):.2f}" for _, r in weekly.iterrows()])
+            msg += "\n".join([f"・{r['Date']} : {r['Symbol']} 取得単価 ${float(r['Buy_Price']):.2f}" for _, r in weekly.iterrows()])
         else:
-            msg += "今週の新規取引はありませんでした。"
+            msg += "今週の新規約定はありませんでした。"
 
-    # 日本の祝日や日曜日の補足
+    # 市場休場日の補足
     if today_jst.weekday() == 6 or today_jst in holidays.Japan():
-        msg += "\n\n📌 ※本日は市場休場日のため、前営業日時点のデータです。"
+        msg += "\n\n📌 ※本日は日本の休日のため、前営業日時点のデータに基づいています。"
 
     # --- Discord送信 ---
     if DISCORD_WEBHOOK_URL:
@@ -225,12 +220,13 @@ def main():
             chunk_size = 1900
             for i in range(0, len(msg), chunk_size):
                 webhook.send(msg[i:i+chunk_size])
-            print("Discord通知を送信しました。")
+            print("【完了】Discord通知を送信しました。")
         except Exception as e:
-            print(f"Discord送信エラー: {e}")
+            print(f"【エラー】Discord送信に失敗しました: {e}")
 
+    print("\n--- 送信内容 ---")
     print(msg)
-    print("--- 処理終了 ---")
+    print("\n--- 処理終了 ---")
 
 
 if __name__ == "__main__":
