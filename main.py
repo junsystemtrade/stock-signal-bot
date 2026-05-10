@@ -29,16 +29,21 @@ US_HOLIDAYS = holidays.US()
 # =============================
 
 def add_indicators(df):
-    low_14  = df['Low'].rolling(14).min()
-    high_14 = df['High'].rolling(14).max()
-    range_14 = high_14 - low_14
-    # ストキャスティクス計算（range=0の場合は中立値50を使用）
-    df['STOCHk'] = 100 * ((df['Close'] - low_14) / range_14.where(range_14.abs() > 1e-10, other=pd.NA)).fillna(50)
+    # ストキャスティクス（期間10: より早い反応）
+    low_10   = df['Low'].rolling(10).min()
+    high_10  = df['High'].rolling(10).max()
+    range_10 = high_10 - low_10
+    df['STOCHk'] = 100 * ((df['Close'] - low_10) / range_10.where(range_10.abs() > 1e-10, other=pd.NA)).fillna(50)
     df['STOCHd'] = df['STOCHk'].rolling(3).mean()
+    # RSI（期間14: Wilderの平滑化EWM）
+    delta    = df['Close'].diff()
+    avg_gain = delta.clip(lower=0).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    avg_loss = (-delta.clip(upper=0)).ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+    df['RSI'] = 100 - (100 / (1 + avg_gain / avg_loss.clip(lower=1e-10)))
     # 移動平均線
     df['MA50']  = df['Close'].rolling(50).mean()
     df['MA200'] = df['Close'].rolling(200).mean()
-    # MACD
+    # MACD（12/26/9）
     ema12 = df['Close'].ewm(span=12, adjust=False).mean()
     ema26 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD']        = ema12 - ema26
@@ -46,22 +51,40 @@ def add_indicators(df):
     return df
 
 
+def _composite_signal(df, base_condition=None):
+    """複合シグナル判定。'strong' / 'medium' / '' を返す Series。
+    条件A (strong): STOCHk≤20 AND RSI≤35
+    条件B (medium): MACDゴールデンクロス AND (STOCHk≤20 OR RSI≤35)
+    """
+    stoch_oversold = (df['STOCHk'] <= 20) | (df['STOCHd'] <= 20)
+    stoch_cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
+    stoch_ok   = stoch_oversold & stoch_cross_up
+    rsi_ok     = df['RSI'] <= 35
+    macd_cross = (df['MACD'] > df['MACD_signal']) & (df['MACD'].shift(1) <= df['MACD_signal'].shift(1))
+
+    cond_a = stoch_ok & rsi_ok                    # 強シグナル
+    cond_b = macd_cross & (stoch_ok | rsi_ok)     # 中シグナル
+
+    if base_condition is not None:
+        cond_a = cond_a & base_condition
+        cond_b = cond_b & base_condition
+
+    strength = pd.Series('', index=df.index)
+    strength = strength.where(~cond_b, 'medium')
+    strength = strength.where(~cond_a, 'strong')  # cond_a が優先
+    return strength
+
+
 def jmia_signal(df):
-    """JMIA: 逆張り反転シグナル (緩和版)"""
-    oversold = (df['STOCHk'] <= 20) | (df['STOCHd'] <= 20)
-    cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
-    vol_ok   = ((df['High'] - df['Low']) / df['Close'].replace(0, 1)) > 0.03
-    macd_up  = df['MACD'] > df['MACD_signal']
-    return oversold & cross_up & vol_ok & macd_up
+    """JMIA: 逆張り反転シグナル — ボラティリティフィルター付き"""
+    vol_ok = ((df['High'] - df['Low']) / df['Close'].replace(0, 1)) > 0.03
+    return _composite_signal(df, base_condition=vol_ok)
 
 
 def nu_signal(df):
-    """NU: 上昇トレンド中の押し目買い (緩和版)"""
+    """NU: 上昇トレンド中の押し目買い — トレンドフィルター付き"""
     trend_ok = (df['MA50'] > df['MA200']) & (df['Close'] > df['MA50'])
-    pullback = (df['STOCHk'] <= 40) & (df['STOCHk'] > 15)
-    cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
-    macd_ok  = df['MACD'] > df['MACD_signal']
-    return trend_ok & pullback & cross_up & macd_ok
+    return _composite_signal(df, base_condition=trend_ok)
 
 
 SIGNAL_CONFIG = {
@@ -116,17 +139,19 @@ def main():
     today_us  = now_us.date()
 
     # CSVの読み込みまたは新規作成
-    cols = ['Date', 'Symbol', 'Status', 'Buy_Price', 'Shares']
+    cols = ['Date', 'Symbol', 'Status', 'Buy_Price', 'Shares', 'Signal_Strength']
     if os.path.exists(CSV_FILE):
         try:
             trade_log = pd.read_csv(CSV_FILE)
             trade_log['Buy_Price'] = pd.to_numeric(trade_log['Buy_Price'], errors='coerce').fillna(0.0)
             trade_log['Status']    = trade_log['Status'].astype(str).str.strip()
             trade_log['Date']      = trade_log['Date'].astype(str)
-            # Shares列が存在しない場合は1で補完（後方互換）
             if 'Shares' not in trade_log.columns:
                 trade_log['Shares'] = 1
             trade_log['Shares'] = pd.to_numeric(trade_log['Shares'], errors='coerce').fillna(1).astype(int)
+            if 'Signal_Strength' not in trade_log.columns:
+                trade_log['Signal_Strength'] = ''
+            trade_log['Signal_Strength'] = trade_log['Signal_Strength'].fillna('').astype(str)
         except Exception as e:
             print(f"【エラー】CSV読み込みエラー: {e}")
             trade_log = pd.DataFrame(columns=cols)
@@ -149,7 +174,8 @@ def main():
 
         # 指標とシグナルの計算
         valid_df = add_indicators(valid_df)
-        valid_df['buy_signal'] = SIGNAL_CONFIG[symbol]['func'](valid_df)
+        valid_df['signal_strength'] = SIGNAL_CONFIG[symbol]['func'](valid_df)
+        valid_df['buy_signal']      = valid_df['signal_strength'] != ''
 
         last_row      = valid_df.tail(1).squeeze()
         last_date_str = valid_df.index[-1].strftime('%Y-%m-%d')
@@ -181,10 +207,16 @@ def main():
                 (trade_log['Status'].isin(['signal', 'holding']))
             ].empty
             if not exists:
-                new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0.0, 'Shares': 1}
+                strength      = str(last_row['signal_strength'])
+                strength_icon = '🔴' if strength == 'strong' else '🟡'
+                new_row = {
+                    'Date': last_date_str, 'Symbol': symbol,
+                    'Status': 'signal', 'Buy_Price': 0.0,
+                    'Shares': 1, 'Signal_Strength': strength,
+                }
                 trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
-                notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
-                print(f"【シグナル】{symbol} の買いシグナルを記録しました。")
+                notifications.append(f"🚨 **買いシグナル発生**: {symbol} {strength_icon} **{strength}**")
+                print(f"【シグナル】{symbol} 強度: {strength_icon} {strength}")
 
         # 4. 現在の保有状況の集計
         holdings    = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
@@ -217,7 +249,12 @@ def main():
         ]
         msg += "\n\n📜 **【週報】今週の新規約定一覧**\n"
         if not weekly.empty:
-            msg += "\n".join([f"・{r['Date']} : {r['Symbol']} 取得単価 ${float(r['Buy_Price']):.2f}" for _, r in weekly.iterrows()])
+            def _icon(s):
+                return '🔴' if s == 'strong' else ('🟡' if s == 'medium' else '')
+            msg += "\n".join([
+                f"・{r['Date']} : {r['Symbol']} 取得単価 ${float(r['Buy_Price']):.2f} {_icon(r.get('Signal_Strength', ''))}"
+                for _, r in weekly.iterrows()
+            ])
         else:
             msg += "今週の新規約定はありませんでした。"
 
