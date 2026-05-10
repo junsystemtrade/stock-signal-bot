@@ -1,4 +1,5 @@
 import os
+import sys
 import datetime
 import pandas as pd
 import yfinance as yf
@@ -6,6 +7,10 @@ from discord import SyncWebhook
 import pytz
 import time
 import holidays
+
+# Windows環境でのUTF-8出力を強制
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # --- 設定 ---
 SYMBOLS = ['JMIA', 'NU']
@@ -24,10 +29,11 @@ US_HOLIDAYS = holidays.US()
 # =============================
 
 def add_indicators(df):
-    low_14 = df['Low'].rolling(14).min()
+    low_14  = df['Low'].rolling(14).min()
     high_14 = df['High'].rolling(14).max()
-    # ストキャスティクス計算
-    df['STOCHk'] = 100 * ((df['Close'] - low_14) / (high_14 - low_14).replace(0, 1))
+    range_14 = high_14 - low_14
+    # ストキャスティクス計算（range=0の場合は中立値50を使用）
+    df['STOCHk'] = 100 * ((df['Close'] - low_14) / range_14.where(range_14.abs() > 1e-10, other=pd.NA)).fillna(50)
     df['STOCHd'] = df['STOCHk'].rolling(3).mean()
     # 移動平均線
     df['MA50']  = df['Close'].rolling(50).mean()
@@ -110,13 +116,17 @@ def main():
     today_us  = now_us.date()
 
     # CSVの読み込みまたは新規作成
-    cols = ['Date', 'Symbol', 'Status', 'Buy_Price']
+    cols = ['Date', 'Symbol', 'Status', 'Buy_Price', 'Shares']
     if os.path.exists(CSV_FILE):
         try:
             trade_log = pd.read_csv(CSV_FILE)
             trade_log['Buy_Price'] = pd.to_numeric(trade_log['Buy_Price'], errors='coerce').fillna(0.0)
             trade_log['Status']    = trade_log['Status'].astype(str).str.strip()
             trade_log['Date']      = trade_log['Date'].astype(str)
+            # Shares列が存在しない場合は1で補完（後方互換）
+            if 'Shares' not in trade_log.columns:
+                trade_log['Shares'] = 1
+            trade_log['Shares'] = pd.to_numeric(trade_log['Shares'], errors='coerce').fillna(1).astype(int)
         except Exception as e:
             print(f"【エラー】CSV読み込みエラー: {e}")
             trade_log = pd.DataFrame(columns=cols)
@@ -164,21 +174,23 @@ def main():
 
         # 3. 新規買いシグナルの判定
         if bool(last_row['buy_signal']) and not cooldown_active:
-            # 重複登録防止
-            exists = trade_log[
-                (trade_log['Date'] == last_date_str) & (trade_log['Symbol'] == symbol)
-            ].any().any()
+            # 重複登録防止（同日・同銘柄・未約定シグナルの二重登録を防ぐ）
+            exists = not trade_log[
+                (trade_log['Date'] == last_date_str) &
+                (trade_log['Symbol'] == symbol) &
+                (trade_log['Status'].isin(['signal', 'holding']))
+            ].empty
             if not exists:
-                new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0.0}
+                new_row = {'Date': last_date_str, 'Symbol': symbol, 'Status': 'signal', 'Buy_Price': 0.0, 'Shares': 1}
                 trade_log = pd.concat([trade_log, pd.DataFrame([new_row])], ignore_index=True)
                 notifications.append(f"🚨 **買いシグナル発生**: {symbol}")
                 print(f"【シグナル】{symbol} の買いシグナルを記録しました。")
 
         # 4. 現在の保有状況の集計
         holdings    = trade_log[(trade_log['Symbol'] == symbol) & (trade_log['Status'] == 'holding')]
-        num_shares  = len(holdings)
+        num_shares  = int(holdings['Shares'].sum()) if not holdings.empty else 0
         current_val = current_price * num_shares
-        cost_basis  = holdings['Buy_Price'].sum()
+        cost_basis  = (holdings['Buy_Price'] * holdings['Shares']).sum() if not holdings.empty else 0.0
         profit_loss = current_val - cost_basis
         profit_str  = f"${profit_loss:+.2f}"
 
