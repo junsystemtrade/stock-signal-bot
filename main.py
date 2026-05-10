@@ -24,6 +24,11 @@ US_EAST = pytz.timezone('US/Eastern')
 # 米国祝日
 US_HOLIDAYS = holidays.US()
 
+# 銘柄別 RSI 閾値（JMIA のみ使用。NU は nu_signal() 内で独自定義）
+RSI_THRESHOLDS = {
+    'JMIA': 35,
+}
+
 # =============================
 # 共通指標計算
 # =============================
@@ -51,19 +56,20 @@ def add_indicators(df):
     return df
 
 
-def _composite_signal(df, base_condition=None):
-    """複合シグナル判定。'strong' / 'medium' / '' を返す Series。
-    条件A (strong): STOCHk≤20 AND RSI≤35
-    条件B (medium): MACDゴールデンクロス AND (STOCHk≤20 OR RSI≤35)
+def _composite_signal(df, rsi_threshold=35, base_condition=None):
+    """JMIA 用複合シグナル判定。'strong' / 'medium' / '' を返す Series。
+    条件A (strong): STOCHk<=20(クロスアップ) AND RSI<=閾値
+    条件B (medium): MACDゴールデンクロス
+    優先順: A > B
     """
     stoch_oversold = (df['STOCHk'] <= 20) | (df['STOCHd'] <= 20)
     stoch_cross_up = (df['STOCHk'] > df['STOCHd']) & (df['STOCHk'].shift(1) <= df['STOCHd'].shift(1))
     stoch_ok   = stoch_oversold & stoch_cross_up
-    rsi_ok     = df['RSI'] <= 35
+    rsi_ok     = df['RSI'] <= rsi_threshold
     macd_cross = (df['MACD'] > df['MACD_signal']) & (df['MACD'].shift(1) <= df['MACD_signal'].shift(1))
 
-    cond_a = stoch_ok & rsi_ok                    # 強シグナル
-    cond_b = macd_cross & (stoch_ok | rsi_ok)     # 中シグナル
+    cond_a = stoch_ok & rsi_ok  # strong
+    cond_b = macd_cross          # medium
 
     if base_condition is not None:
         cond_a = cond_a & base_condition
@@ -71,25 +77,43 @@ def _composite_signal(df, base_condition=None):
 
     strength = pd.Series('', index=df.index)
     strength = strength.where(~cond_b, 'medium')
-    strength = strength.where(~cond_a, 'strong')  # cond_a が優先
+    strength = strength.where(~cond_a, 'strong')  # A が B を上書き
     return strength
 
 
 def jmia_signal(df):
     """JMIA: 逆張り反転シグナル — ボラティリティフィルター付き"""
     vol_ok = ((df['High'] - df['Low']) / df['Close'].replace(0, 1)) > 0.03
-    return _composite_signal(df, base_condition=vol_ok)
+    return _composite_signal(df, rsi_threshold=RSI_THRESHOLDS['JMIA'], base_condition=vol_ok)
 
 
 def nu_signal(df):
-    """NU: 上昇トレンド中の押し目買い — トレンドフィルター付き"""
-    trend_ok = (df['MA50'] > df['MA200']) & (df['Close'] > df['MA50'])
-    return _composite_signal(df, base_condition=trend_ok)
+    """NU: トレンドフォロー型プルバック戦略（調整版）
+    前提 : Close > MA200
+    strong: RSI 40-55 AND STOCHk <= 40
+    medium: MACDゴールデンクロス OR (STOCHk <= 40 AND RSI <= 50)
+    優先順: strong > medium
+    """
+    above_ma200 = df['Close'] > df['MA200']
+    macd_cross  = (df['MACD'] > df['MACD_signal']) & (df['MACD'].shift(1) <= df['MACD_signal'].shift(1))
+    rsi_sweet   = (df['RSI'] >= 40) & (df['RSI'] <= 55)
+    stoch_40    = df['STOCHk'] <= 40
+    rsi_50      = df['RSI'] <= 50
+
+    stoch_30    = df['STOCHk'] <= 30
+
+    cond_a = above_ma200 & rsi_sweet & stoch_30                # strong
+    cond_b = above_ma200 & (macd_cross | (stoch_40 & rsi_50))  # medium
+
+    strength = pd.Series('', index=df.index)
+    strength = strength.where(~cond_b, 'medium')
+    strength = strength.where(~cond_a, 'strong')
+    return strength
 
 
 SIGNAL_CONFIG = {
-    'JMIA': {'func': jmia_signal},
-    'NU':   {'func': nu_signal},
+    'JMIA': {'func': jmia_signal, 'min_strength': 'any'},    # strong + medium 両方実行
+    'NU':   {'func': nu_signal,   'min_strength': 'strong'},  # strong のみ実行
 }
 
 # =============================
@@ -175,7 +199,12 @@ def main():
         # 指標とシグナルの計算
         valid_df = add_indicators(valid_df)
         valid_df['signal_strength'] = SIGNAL_CONFIG[symbol]['func'](valid_df)
-        valid_df['buy_signal']      = valid_df['signal_strength'] != ''
+        min_str  = SIGNAL_CONFIG[symbol]['min_strength']
+        valid_df['buy_signal'] = (
+            valid_df['signal_strength'] == 'strong'
+            if min_str == 'strong'
+            else valid_df['signal_strength'] != ''
+        )
 
         last_row      = valid_df.tail(1).squeeze()
         last_date_str = valid_df.index[-1].strftime('%Y-%m-%d')
